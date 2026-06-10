@@ -739,30 +739,65 @@ const VOICE_KEYWORDS = [
   {words:['vacaciones','viaje'],cat:'Vacaciones',sub:'Panoramas'},
 ];
 
+// ── MATCH DE PALABRA COMPLETA ─────────────────────────────────
+// Evita que "gas" calce dentro de "gasté" o "pan" dentro de "pantalón".
+// Respeta tildes y ñ (que el \b estándar no maneja bien).
+function wordMatch(text, kw){
+  const esc=kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const re=new RegExp('(^|[^a-záéíóúñü0-9])'+esc+'([^a-záéíóúñü0-9]|$)','i');
+  return re.test(text);
+}
+
+// ── PARSEO DE MONTOS ──────────────────────────────────────────
+// Maneja dígitos ("3500", "30.000", "20 mil") y palabras
+// ("tres mil quinientos", "cuarenta y cinco mil").
+function parseAmountDigits(lower){
+  // quitar signo peso y puntos de miles (30.000 → 30000)
+  const cleaned=lower.replace(/\$/g,'').replace(/(\d)\.(\d{3})\b/g,'$1$2');
+  const m=cleaned.match(/\d+/g);
+  if(!m) return null;
+  let n=parseInt(m[0]);
+  // si dijo "X mil" con X chico (ej "20 mil", "3 mil 500")
+  if(/\bmil\b/.test(lower) && n<1000){
+    n=n*1000;
+    if(m[1]) n+=parseInt(m[1]); // suma lo que venga después ("3 mil 500")
+  }
+  return n;
+}
+function parseSpanishWords(text){
+  // diccionario completo de números hablados en español chileno
+  const u={cero:0,un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6,siete:7,ocho:8,nueve:9,
+    diez:10,once:11,doce:12,trece:13,catorce:14,quince:15,dieciseis:16,diecisiete:17,dieciocho:18,diecinueve:19,
+    veinte:20,veintiuno:21,veintidos:22,veintitres:23,veinticuatro:24,veinticinco:25,veintiseis:26,veintisiete:27,veintiocho:28,veintinueve:29,
+    treinta:30,cuarenta:40,cincuenta:50,sesenta:60,setenta:70,ochenta:80,noventa:90,
+    cien:100,ciento:100,doscientos:200,doscientas:200,trescientos:300,trescientas:300,cuatrocientos:400,cuatrocientas:400,
+    quinientos:500,quinientas:500,seiscientos:600,seiscientas:600,setecientos:700,setecientas:700,ochocientos:800,ochocientas:800,novecientos:900,novecientas:900};
+  // normalizar tildes pa' calzar siempre
+  const norm=text.replace(/á/g,'a').replace(/é/g,'e').replace(/í/g,'i').replace(/ó/g,'o').replace(/ú/g,'u');
+  const toks=norm.split(/[\s,]+/);
+  let total=0,current=0,found=false;
+  for(const t of toks){
+    if(t==='y') continue;
+    if(t==='mil'){ total+=(current===0?1:current)*1000; current=0; found=true; continue; }
+    if(t==='millon'||t==='millones'){ total+=(current===0?1:current)*1000000; current=0; found=true; continue; }
+    if(u[t]!==undefined){ current+=u[t]; found=true; }
+  }
+  total+=current;
+  return found?total:null;
+}
+
 function parseVoiceText(text){
   const lower=text.toLowerCase();
-  // MONTO
-  let amount=null;
-  const numWords={'cero':0,'un':1,'uno':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,'seis':6,'siete':7,'ocho':8,'nueve':9,'diez':10,'once':11,'doce':12,'trece':13,'catorce':14,'quince':15,'dieciseis':16,'dieciséis':16,'diecisiete':17,'dieciocho':18,'diecinueve':19,'veinte':20,'treinta':30,'cuarenta':40,'cincuenta':50,'sesenta':60,'setenta':70,'ochenta':80,'noventa':90,'cien':100,'ciento':100,'doscientos':200,'trescientos':300,'cuatrocientos':400,'quinientos':500};
-  const numMatch=lower.replace(/[$.]/g,'').match(/(\d[\d\s]*\d|\d)/);
-  if(numMatch){
-    let n=parseInt(numMatch[0].replace(/\s/g,''));
-    if(lower.includes('mil')) n*=1000;
-    amount=n;
-  } else {
-    // suma palabras tipo "cuarenta y cinco"
-    let acc=0, found=false;
-    for(const[word,val] of Object.entries(numWords)){
-      const re=new RegExp('\\b'+word+'\\b');
-      if(re.test(lower)){ acc+=val; found=true; }
-    }
-    if(found){ if(lower.includes('mil')) acc*=1000; amount=acc; }
-  }
-  // CATEGORÍA — gana la palabra más larga (más específica)
+  // MONTO — primero dígitos, si no, palabras
+  let amount=parseAmountDigits(lower);
+  if(amount===null) amount=parseSpanishWords(lower);
+  // CATEGORÍA — gana la palabra más larga (más específica).
+  // Usamos matching de PALABRA COMPLETA: así "gas" no calza dentro de
+  // "gasté", ni "pan" dentro de "pantalón", etc.
   let matchedCat=null,matchedSub=null,best=0;
   for(const kw of VOICE_KEYWORDS){
     for(const w of kw.words){
-      if(lower.includes(w) && w.length>best){
+      if(wordMatch(lower,w) && w.length>best){
         best=w.length; matchedCat=kw.cat; matchedSub=kw.sub;
       }
     }
@@ -770,7 +805,7 @@ function parseVoiceText(text){
   // categorías custom: el nombre funciona como keyword
   for(const c of customCats){
     const w=c.n.toLowerCase();
-    if(lower.includes(w) && w.length>best){ best=w.length; matchedCat=c.n; matchedSub=null; }
+    if(wordMatch(lower,w) && w.length>best){ best=w.length; matchedCat=c.n; matchedSub=null; }
   }
   return {amount,cat:matchedCat,sub:matchedSub,desc:text.trim()};
 }
@@ -803,7 +838,7 @@ function voiceExample(el){
 }
 
 // ── RECONOCIMIENTO DE VOZ (Safari iOS) ────────────────────────
-let voiceRecognition=null, voiceActive=false;
+let voiceRecognition=null, voiceActive=false, lastTranscript='', voiceProcessed=false;
 function resetVoiceHero(){
   document.getElementById('voice-hero').classList.remove('listening');
   document.getElementById('voice-label').textContent='Toca y habla';
@@ -818,23 +853,34 @@ function doVoice(){
   voiceRecognition.continuous=false;
   voiceRecognition.interimResults=true;
   voiceRecognition.maxAlternatives=1;
-  voiceActive=true;
+  voiceActive=true; lastTranscript=''; voiceProcessed=false;
   document.getElementById('voice-hero').classList.add('listening');
   document.getElementById('voice-label').textContent='Escuchando...';
   box.innerHTML='<span class="ai-pill">🎤 Escuchando... habla ahora</span>';
   box.style.display='block';
   voiceRecognition.onresult=(e)=>{
     const transcript=Array.from(e.results).map(r=>r[0].transcript).join('');
+    lastTranscript=transcript; // guardo lo último por si no llega el "final"
     box.innerHTML='<span class="ai-pill">🎤 Escuchando...</span> '+transcript;
-    if(e.results[0].isFinal){ applyVoiceResult(parseVoiceText(transcript),transcript); }
+    if(e.results[0].isFinal){
+      voiceProcessed=true;
+      applyVoiceResult(parseVoiceText(transcript),transcript);
+    }
   };
   voiceRecognition.onerror=(e)=>{
     voiceActive=false; resetVoiceHero();
     if(e.error==='not-allowed') toast('⚠ Activa el micrófono en Configuración → Safari');
+    else if(e.error==='no-speech') toast('⚠ No escuché nada — intenta de nuevo');
     else toast('⚠ Error de voz: '+e.error);
-    box.style.display='none';
+    if(!voiceProcessed) box.style.display='none';
   };
-  voiceRecognition.onend=()=>{ voiceActive=false; resetVoiceHero(); };
+  voiceRecognition.onend=()=>{
+    voiceActive=false; resetVoiceHero();
+    // red de seguridad iOS: si nunca llegó el "final", proceso lo último escuchado
+    if(!voiceProcessed && lastTranscript.trim()){
+      applyVoiceResult(parseVoiceText(lastTranscript),lastTranscript);
+    }
+  };
   voiceRecognition.start();
 }
 
